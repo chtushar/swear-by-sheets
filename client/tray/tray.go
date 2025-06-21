@@ -10,6 +10,7 @@ import (
 
 	"github.com/chtushar/swear-by-sheets/client/audio"
 	"github.com/getlantern/systray"
+	"github.com/getlantern/systray/example/icon"
 )
 
 // Tray struct
@@ -54,8 +55,7 @@ func (t *Tray) Startup(ctx context.Context) error {
 }
 
 func (t *Tray) onReady() {
-	// TODO: Set custom icon
-	systray.SetTitle("Swear by Sheets")
+	systray.SetIcon(icon.Data)
 	systray.SetTooltip("Voice + Screen control for Google Sheets")
 
 	t.setupToggleRecording()
