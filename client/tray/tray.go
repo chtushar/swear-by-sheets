@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/chtushar/swear-by-sheets/client/api"
 	"github.com/chtushar/swear-by-sheets/client/audio"
 	"github.com/getlantern/systray"
 	"github.com/getlantern/systray/example/icon"
@@ -20,6 +21,7 @@ type Tray struct {
 	toggleMenuItem *systray.MenuItem
 	quitMenuItem   *systray.MenuItem
 	audioRecorder  *audio.Recorder
+	apiClient      *api.Client
 	recordingsDir  string
 }
 
@@ -35,6 +37,11 @@ func (t *Tray) Startup(ctx context.Context) error {
 
 	// Initialize audio recorder
 	t.audioRecorder = audio.NewRecorder()
+	apiURL := "http://localhost:8787"
+	if envURL := os.Getenv("SWEAR_BY_SHEETS_API_URL"); envURL != "" {
+		apiURL = envURL
+	}
+	t.apiClient = api.NewClient(apiURL)
 
 	// Create recordings directory
 	homeDir, err := os.UserHomeDir()
@@ -132,6 +139,39 @@ func (t *Tray) stopRecording() {
 		log.Printf("Audio saved to: %s", audioFile)
 		systray.SetTooltip(fmt.Sprintf("Recording saved to %s", audioFile))
 	}
+
+	log.Printf("Audio saved to: %s", audioFile)
+	systray.SetTooltip("Processing audio...")
+
+	// Send audio to backend for processing
+	go func() {
+		log.Println("Sending audio to backend...")
+		resp, err := t.apiClient.ProcessAudioFile(audioFile, "")
+		if err != nil {
+			log.Printf("Failed to process audio: %v", err)
+			systray.SetTooltip(fmt.Sprintf("Failed to process: %v", err))
+			return
+		}
+
+		if resp.Success {
+			log.Printf("Audio processed successfully")
+			systray.SetTooltip("Command executed successfully!")
+
+			// Log the response details if available
+			if resp.Transcript != "" {
+				log.Printf("Transcript: %s", resp.Transcript)
+			}
+			if resp.Command != nil {
+				log.Printf("Command: %v", resp.Command)
+			}
+			if resp.Result != nil {
+				log.Printf("Result: %v", resp.Result)
+			}
+		} else {
+			log.Printf("Processing failed: %s", resp.Error)
+			systray.SetTooltip(fmt.Sprintf("Processing failed: %s", resp.Error))
+		}
+	}()
 
 	t.isRecording = false
 	t.toggleMenuItem.SetTitle("Start Recording")
