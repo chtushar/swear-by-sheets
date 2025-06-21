@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import { tool, ToolSet } from 'ai';
-import { sheets_v4 } from 'googleapis';
+import { tool } from 'ai';
+import { sheets_v4, drive_v3 } from 'googleapis';
 
 // Export all tools as a collection
-export const sheetsTools = (sheets: sheets_v4.Sheets) => {
+export const sheetsTools = (sheets: sheets_v4.Sheets, drive: drive_v3.Drive) => {
 	const createSpreadsheet = tool({
 		description: 'Create a new Google spreadsheet - use this ONLY when the user wants to create a brand new spreadsheet from scratch',
 		parameters: z.object({
@@ -19,15 +19,42 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 				.optional()
 				.describe('Initial sheets to create'),
 		}),
-		execute: async ({ title, sheets }) => {
-			// TODO: Implement Google Sheets API call to create spreadsheet
+		execute: async ({ title, sheets: requestedSheets }) => {
 			console.log('TOOL CALLED: createSpreadsheet');
-			console.log('Creating spreadsheet:', { title, sheets });
-			return {
-				spreadsheetId: 'mock-id',
-				spreadsheetUrl: `https://docs.google.com/spreadsheets/d/mock-id`,
-				sheets: sheets || [{ title: 'Sheet1', rows: 1000, columns: 26 }],
-			};
+			console.log('Creating spreadsheet:', { title, sheets: requestedSheets });
+
+			try {
+				const response = await sheets.spreadsheets.create({
+					requestBody: {
+						properties: {
+							title,
+						},
+						sheets: requestedSheets?.map((sheet) => ({
+							properties: {
+								title: sheet.title,
+								gridProperties: {
+									rowCount: sheet.rows,
+									columnCount: sheet.columns,
+								},
+							},
+						})),
+					},
+				});
+
+				return {
+					spreadsheetId: response.data.spreadsheetId!,
+					spreadsheetUrl: response.data.spreadsheetUrl!,
+					sheets:
+						response.data.sheets?.map((sheet) => ({
+							title: sheet.properties?.title || 'Sheet1',
+							rows: sheet.properties?.gridProperties?.rowCount || 1000,
+							columns: sheet.properties?.gridProperties?.columnCount || 26,
+						})) || [],
+				};
+			} catch (error) {
+				console.error('Error creating spreadsheet:', error);
+				throw new Error(`Failed to create spreadsheet: ${error}`);
+			}
 		},
 	});
 
@@ -44,14 +71,25 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 				.describe('How to render the values'),
 		}),
 		execute: async ({ spreadsheetId, range, valueRenderOption }) => {
-			// TODO: Implement Google Sheets API call to get values
 			console.log('TOOL CALLED: getValues');
 			console.log('Getting values:', { spreadsheetId, range, valueRenderOption });
-			return {
-				range,
-				majorDimension: 'ROWS',
-				values: [['Mock', 'Data']],
-			};
+
+			try {
+				const response = await sheets.spreadsheets.values.get({
+					spreadsheetId,
+					range,
+					valueRenderOption,
+				});
+
+				return {
+					range: response.data.range!,
+					majorDimension: response.data.majorDimension || 'ROWS',
+					values: response.data.values || [],
+				};
+			} catch (error) {
+				console.error('Error getting values:', error);
+				throw new Error(`Failed to get values: ${error}`);
+			}
 		},
 	});
 
@@ -65,16 +103,48 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 			columns: z.number().int().positive().optional().default(26).describe('Number of columns'),
 		}),
 		execute: async ({ spreadsheetId, title, rows, columns }) => {
-			// TODO: Implement Google Sheets API call to add sheet
 			console.log('TOOL CALLED: addSheet');
 			console.log('Adding sheet:', { spreadsheetId, title, rows, columns });
-			return {
-				sheetId: 123456,
-				title,
-				index: 1,
-				sheetType: 'GRID',
-				gridProperties: { rowCount: rows, columnCount: columns },
-			};
+
+			try {
+				const response = await sheets.spreadsheets.batchUpdate({
+					spreadsheetId,
+					requestBody: {
+						requests: [
+							{
+								addSheet: {
+									properties: {
+										title,
+										gridProperties: {
+											rowCount: rows,
+											columnCount: columns,
+										},
+									},
+								},
+							},
+						],
+					},
+				});
+
+				const addedSheet = response.data.replies?.[0]?.addSheet?.properties;
+				if (!addedSheet) {
+					throw new Error('No sheet was added in the response');
+				}
+
+				return {
+					sheetId: addedSheet.sheetId!,
+					title: addedSheet.title!,
+					index: addedSheet.index!,
+					sheetType: addedSheet.sheetType || 'GRID',
+					gridProperties: {
+						rowCount: addedSheet.gridProperties?.rowCount || rows,
+						columnCount: addedSheet.gridProperties?.columnCount || columns,
+					},
+				};
+			} catch (error) {
+				console.error('Error adding sheet:', error);
+				throw new Error(`Failed to add sheet: ${error}`);
+			}
 		},
 	});
 
@@ -86,13 +156,38 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 			nextPageToken: z.string().optional().describe('Token for pagination'),
 		}),
 		execute: async ({ maxResults, query, nextPageToken }) => {
-			// TODO: Implement Google Drive API call to list spreadsheets
 			console.log('TOOL CALLED: listSpreadsheets');
 			console.log('Listing spreadsheets:', { maxResults, query, nextPageToken });
-			return {
-				files: [],
-				nextPageToken: null,
-			};
+
+			try {
+				// Build the search query - filter for Google Sheets files
+				let q = "mimeType='application/vnd.google-apps.spreadsheet'";
+				if (query) {
+					q += ` and name contains '${query}'`;
+				}
+
+				const response = await drive.files.list({
+					q,
+					pageSize: maxResults,
+					pageToken: nextPageToken,
+					fields: 'nextPageToken, files(id, name, createdTime, modifiedTime, webViewLink)',
+				});
+
+				return {
+					files:
+						response.data.files?.map((file) => ({
+							id: file.id!,
+							name: file.name!,
+							createdTime: file.createdTime,
+							modifiedTime: file.modifiedTime,
+							webViewLink: file.webViewLink,
+						})) || [],
+					nextPageToken: response.data.nextPageToken || null,
+				};
+			} catch (error) {
+				console.error('Error listing spreadsheets:', error);
+				throw new Error(`Failed to list spreadsheets: ${error}`);
+			}
 		},
 	});
 
@@ -103,19 +198,35 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 			spreadsheetId: z.string().describe('ID of the spreadsheet to retrieve'),
 		}),
 		execute: async ({ spreadsheetId }) => {
-			// TODO: Implement Google Sheets API call to get spreadsheet metadata
 			console.log('TOOL CALLED: getSpreadsheet');
 			console.log('Getting spreadsheet metadata:', { spreadsheetId });
-			return {
-				spreadsheetId,
-				properties: {
-					title: 'Mock Spreadsheet',
-					locale: 'en_US',
-					timeZone: 'America/New_York',
-				},
-				sheets: [],
-				spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${spreadsheetId}`,
-			};
+
+			try {
+				const response = await sheets.spreadsheets.get({
+					spreadsheetId,
+				});
+
+				return {
+					spreadsheetId: response.data.spreadsheetId!,
+					properties: {
+						title: response.data.properties?.title || '',
+						locale: response.data.properties?.locale || 'en_US',
+						timeZone: response.data.properties?.timeZone || 'America/New_York',
+					},
+					sheets:
+						response.data.sheets?.map((sheet) => ({
+							sheetId: sheet.properties?.sheetId,
+							title: sheet.properties?.title || '',
+							index: sheet.properties?.index || 0,
+							sheetType: sheet.properties?.sheetType || 'GRID',
+							gridProperties: sheet.properties?.gridProperties,
+						})) || [],
+					spreadsheetUrl: response.data.spreadsheetUrl!,
+				};
+			} catch (error) {
+				console.error('Error getting spreadsheet metadata:', error);
+				throw new Error(`Failed to get spreadsheet metadata: ${error}`);
+			}
 		},
 	});
 
@@ -125,13 +236,22 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 			spreadsheetId: z.string().describe('ID of the spreadsheet to delete'),
 		}),
 		execute: async ({ spreadsheetId }) => {
-			// TODO: Implement Google Drive API call to delete spreadsheet
 			console.log('TOOL CALLED: deleteSpreadsheet');
 			console.log('Deleting spreadsheet:', { spreadsheetId });
-			return {
-				success: true,
-				spreadsheetId,
-			};
+
+			try {
+				await drive.files.delete({
+					fileId: spreadsheetId,
+				});
+
+				return {
+					success: true,
+					spreadsheetId,
+				};
+			} catch (error) {
+				console.error('Error deleting spreadsheet:', error);
+				throw new Error(`Failed to delete spreadsheet: ${error}`);
+			}
 		},
 	});
 
@@ -141,20 +261,34 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 		parameters: z.object({
 			spreadsheetId: z.string().describe('ID of the spreadsheet to update'),
 			range: z.string().describe('A1 notation range, e.g. "Sheet1!A1:D5"'),
-			values: z.array(z.array(z.any())).describe('Array of arrays with values to update'),
+			values: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))).describe('Array of arrays with values to update'),
 			valueInputOption: z.enum(['RAW', 'USER_ENTERED']).optional().default('USER_ENTERED').describe('How to interpret the values'),
 		}),
 		execute: async ({ spreadsheetId, range, values, valueInputOption }) => {
-			// TODO: Implement Google Sheets API call to update values
 			console.log('TOOL CALLED: updateValues');
 			console.log('Updating values:', { spreadsheetId, range, values, valueInputOption });
-			return {
-				spreadsheetId,
-				updatedRange: range,
-				updatedRows: values.length,
-				updatedColumns: values[0]?.length || 0,
-				updatedCells: values.length * (values[0]?.length || 0),
-			};
+
+			try {
+				const response = await sheets.spreadsheets.values.update({
+					spreadsheetId,
+					range,
+					valueInputOption,
+					requestBody: {
+						values,
+					},
+				});
+
+				return {
+					spreadsheetId: response.data.spreadsheetId!,
+					updatedRange: response.data.updatedRange!,
+					updatedRows: response.data.updatedRows || 0,
+					updatedColumns: response.data.updatedColumns || 0,
+					updatedCells: response.data.updatedCells || 0,
+				};
+			} catch (error) {
+				console.error('Error updating values:', error);
+				throw new Error(`Failed to update values: ${error}`);
+			}
 		},
 	});
 
@@ -166,14 +300,32 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 			sheetId: z.number().int().describe('The ID of the sheet to delete (not the name)'),
 		}),
 		execute: async ({ spreadsheetId, sheetId }) => {
-			// TODO: Implement Google Sheets API call to delete sheet
 			console.log('TOOL CALLED: deleteSheet');
 			console.log('Deleting sheet:', { spreadsheetId, sheetId });
-			return {
-				success: true,
-				spreadsheetId,
-				deletedSheetId: sheetId,
-			};
+
+			try {
+				await sheets.spreadsheets.batchUpdate({
+					spreadsheetId,
+					requestBody: {
+						requests: [
+							{
+								deleteSheet: {
+									sheetId,
+								},
+							},
+						],
+					},
+				});
+
+				return {
+					success: true,
+					spreadsheetId,
+					deletedSheetId: sheetId,
+				};
+			} catch (error) {
+				console.error('Error deleting sheet:', error);
+				throw new Error(`Failed to delete sheet: ${error}`);
+			}
 		},
 	});
 
@@ -191,16 +343,38 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 				message: 'Either emailAddress or domain must be provided',
 			}),
 		execute: async ({ spreadsheetId, emailAddress, domain, role, sendNotification }) => {
-			// TODO: Implement Google Drive API call to share spreadsheet
 			console.log('TOOL CALLED: shareSpreadsheet');
 			console.log('Sharing spreadsheet:', { spreadsheetId, emailAddress, domain, role, sendNotification });
-			return {
-				id: 'permission-id',
-				type: emailAddress ? 'user' : 'domain',
-				emailAddress: emailAddress || undefined,
-				domain: domain || undefined,
-				role,
-			};
+
+			try {
+				const permission: any = {
+					type: emailAddress ? 'user' : 'domain',
+					role,
+				};
+
+				if (emailAddress) {
+					permission.emailAddress = emailAddress;
+				} else if (domain) {
+					permission.domain = domain;
+				}
+
+				const response = await drive.permissions.create({
+					fileId: spreadsheetId,
+					requestBody: permission,
+					sendNotificationEmail: sendNotification,
+				});
+
+				return {
+					id: response.data.id!,
+					type: response.data.type!,
+					emailAddress: response.data.emailAddress,
+					domain: response.data.domain,
+					role: response.data.role!,
+				};
+			} catch (error) {
+				console.error('Error sharing spreadsheet:', error);
+				throw new Error(`Failed to share spreadsheet: ${error}`);
+			}
 		},
 	});
 
@@ -274,21 +448,135 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 				.describe('Border settings'),
 		}),
 		execute: async (params) => {
-			// TODO: Implement Google Sheets API call to format cells
 			console.log('TOOL CALLED: formatCells');
 			console.log('Formatting cells:', params);
-			return {
-				spreadsheetId: params.spreadsheetId,
-				formattedRange: params.range,
-				appliedFormats: Object.keys(params).filter(
-					(key) => !['spreadsheetId', 'range'].includes(key) && params[key as keyof typeof params] !== undefined,
-				),
-			};
+
+			try {
+				// Parse the range to get sheet name and A1 notation
+				const [sheetName, a1Range] = params.range.includes('!') ? params.range.split('!') : ['Sheet1', params.range];
+
+				// Get spreadsheet metadata to find sheet ID
+				const spreadsheet = await sheets.spreadsheets.get({
+					spreadsheetId: params.spreadsheetId,
+				});
+
+				const sheet = spreadsheet.data.sheets?.find((s) => s.properties?.title === sheetName);
+				if (!sheet || !sheet.properties?.sheetId) {
+					throw new Error(`Sheet "${sheetName}" not found`);
+				}
+
+				// Convert A1 notation to GridRange
+				const parseA1Notation = (a1: string) => {
+					const match = a1.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/);
+					if (!match) throw new Error(`Invalid A1 notation: ${a1}`);
+
+					const colToNum = (col: string) => {
+						let num = 0;
+						for (let i = 0; i < col.length; i++) {
+							num = num * 26 + (col.charCodeAt(i) - 65 + 1);
+						}
+						return num - 1;
+					};
+
+					return {
+						startRowIndex: parseInt(match[2]) - 1,
+						startColumnIndex: colToNum(match[1]),
+						endRowIndex: match[4] ? parseInt(match[4]) : parseInt(match[2]),
+						endColumnIndex: match[3] ? colToNum(match[3]) + 1 : colToNum(match[1]) + 1,
+					};
+				};
+
+				const gridRange = {
+					sheetId: sheet.properties.sheetId,
+					...parseA1Notation(a1Range),
+				};
+
+				// Build the cell format
+				const cellFormat: any = {};
+
+				// Background color
+				if (params.backgroundColor) {
+					cellFormat.backgroundColor = convertColorToRGB(params.backgroundColor);
+				}
+
+				// Text format
+				const textFormat: any = {};
+				if (params.textColor) textFormat.foregroundColor = convertColorToRGB(params.textColor);
+				if (params.fontSize) textFormat.fontSize = params.fontSize;
+				if (params.fontFamily) textFormat.fontFamily = params.fontFamily;
+				if (params.bold !== undefined) textFormat.bold = params.bold;
+				if (params.italic !== undefined) textFormat.italic = params.italic;
+				if (params.underline !== undefined) textFormat.underline = params.underline;
+				if (params.strikethrough !== undefined) textFormat.strikethrough = params.strikethrough;
+
+				if (Object.keys(textFormat).length > 0) {
+					cellFormat.textFormat = textFormat;
+				}
+
+				// Alignment
+				if (params.horizontalAlignment) cellFormat.horizontalAlignment = params.horizontalAlignment;
+				if (params.verticalAlignment) cellFormat.verticalAlignment = params.verticalAlignment;
+				if (params.wrapStrategy) cellFormat.wrapStrategy = params.wrapStrategy;
+
+				// Number format
+				if (params.numberFormat) {
+					cellFormat.numberFormat = {
+						type: params.numberFormat.type,
+						pattern: params.numberFormat.pattern,
+					};
+				}
+
+				// Borders
+				if (params.borders) {
+					const borders: any = {};
+					for (const [side, border] of Object.entries(params.borders)) {
+						if (border) {
+							borders[side] = {
+								style: border.style,
+								width: border.width,
+								color: border.color ? convertColorToRGB(border.color) : undefined,
+							};
+						}
+					}
+					cellFormat.borders = borders;
+				}
+
+				// Make the API call
+				const response = await sheets.spreadsheets.batchUpdate({
+					spreadsheetId: params.spreadsheetId,
+					requestBody: {
+						requests: [
+							{
+								repeatCell: {
+									range: gridRange,
+									cell: {
+										userEnteredFormat: cellFormat,
+									},
+									fields: Object.keys(cellFormat)
+										.map((key) => `userEnteredFormat.${key}`)
+										.join(','),
+								},
+							},
+						],
+					},
+				});
+
+				return {
+					spreadsheetId: params.spreadsheetId,
+					formattedRange: params.range,
+					appliedFormats: Object.keys(params).filter(
+						(key) => !['spreadsheetId', 'range'].includes(key) && params[key as keyof typeof params] !== undefined,
+					),
+				};
+			} catch (error) {
+				console.error('Error formatting cells:', error);
+				throw new Error(`Failed to format cells: ${error}`);
+			}
 		},
 	});
 
 	// Helper function to convert color formats to Google Sheets RGB format
-	function convertColorToRGB(color: string | { red: number; green: number; blue: number; alpha?: number }) {
+	function convertColorToRGB(color: any): { red: number; green: number; blue: number; alpha?: number } {
 		if (typeof color === 'object') {
 			return color;
 		}
@@ -322,12 +610,15 @@ export const sheetsTools = (sheets: sheets_v4.Sheets) => {
 		return { ...(namedColors[color.toLowerCase()] || namedColors.black), alpha: 1 };
 	}
 	return {
+		createSpreadsheet,
 		getValues,
 		addSheet,
 		listSpreadsheets,
 		getSpreadsheet,
+		deleteSpreadsheet,
 		updateValues,
-		formatCells,
 		deleteSheet,
+		shareSpreadsheet,
+		formatCells,
 	};
 };
