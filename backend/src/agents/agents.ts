@@ -1,128 +1,153 @@
-import { Agent, AgentContext, getAgentByName } from 'agents';
-import { generateText, experimental_transcribe as transcribe } from 'ai';
-import { createOpenAI, openai } from '@ai-sdk/openai';
-import { google } from 'googleapis';
-import { sheetsTools } from '../tools/sheets';
+import { Agent, AgentContext, getAgentByName } from "agents";
+import { generateText, experimental_transcribe as transcribe } from "ai";
+import { createOpenAI, openai } from "@ai-sdk/openai";
+import { google } from "googleapis";
+import { sheetsTools } from "../tools/sheets";
 
 export class AudioTranscriptionAgent extends Agent<CloudflareBindings> {
-	openai = createOpenAI({
-		apiKey: this.env.OPENAI_API_KEY,
-		baseURL: `https://gateway.ai.cloudflare.com/v1/tushar-personal/${this.env.CF_AI_GATEWAY_ID}/workers-ai/openai`,
-		headers: {
-			'cf-aig-authorization': `Bearer ${this.env.CF_TOKEN}`,
-		},
-	});
-	async onRequest(request: Request): Promise<Response> {
-		const formData = await request.formData();
-		const audioFile = formData.get('audio') as File;
-		const blob = await audioFile.arrayBuffer();
+  openai = createOpenAI({
+    apiKey: this.env.OPENAI_API_KEY,
+    baseURL: `https://gateway.ai.cloudflare.com/v1/tushar-personal/${this.env.CF_AI_GATEWAY_ID}/workers-ai/openai`,
+    headers: {
+      "cf-aig-authorization": `Bearer ${this.env.CF_TOKEN}`,
+    },
+  });
+  async onRequest(request: Request): Promise<Response> {
+    const formData = await request.formData();
+    const audioFile = formData.get("audio") as File;
+    const imageFile = formData.get("screenshot") as File;
 
-		console.log('Making call to transcribe text');
-		const transcription = await transcribe({
-			model: openai.transcription('whisper-1'),
-			audio: blob,
-		});
-		// @ts-expect-error Take text from transcription
-		const text = transcription.responses?.[0]?.body?.text || '';
-		console.log('Text transcribed successfully with text:', text);
+    const blob = await audioFile.arrayBuffer();
+    const imageBlob = await imageFile?.arrayBuffer();
 
-		console.log('Running sheets agent.');
-		const agent = await getAgentByName(this.env['google-sheets-agent'], 'default');
+    console.log("Making call to transcribe text");
+    const transcription = await transcribe({
+      model: openai.transcription("whisper-1"),
+      audio: blob,
+    });
+    // @ts-expect-error Take text from transcription
+    const text = transcription.responses?.[0]?.body?.text || "";
+    console.log("Text transcribed successfully with text:", text);
 
-		agent
-			.processSheetRequest({ text })
-			.then(() => {
-				console.log('Sheets agent ran successfully.');
-			})
-			.catch((e) => {
-				console.error('error calling the sheets agent', e);
-			});
+    console.log("Running sheets agent.");
+    const [agent, screenshotAgent] = await Promise.all([
+      getAgentByName(this.env["google-sheets-agent"], "default"),
+      getAgentByName(this.env["screenshot-analysis-agent"], "default"),
+    ]);
 
-		return Response.json({ success: true });
-	}
+    screenshotAgent
+      .analyzeScreenshot(imageBlob)
+      .then(async (metadata) => {
+        const finalPrompt = `${text} Here's the metadata: ${metadata}`;
+        await agent.processSheetRequest({ text: finalPrompt });
+      })
+      .then(() => {
+        console.log("Sheets agent ran successfully.");
+      })
+      .catch((e) => {
+        console.error("error calling the sheets agent", e);
+      });
+
+    return Response.json({ success: true });
+  }
 }
 
 export class GoogleSheetsAgent extends Agent<CloudflareBindings> {
-	openai = createOpenAI({
-		apiKey: this.env.OPENAI_API_KEY,
-		baseURL: `https://gateway.ai.cloudflare.com/v1/tushar-personal/${this.env.CF_AI_GATEWAY_ID}/workers-ai/openai`,
-		headers: {
-			'cf-aig-authorization': `Bearer ${this.env.CF_TOKEN}`,
-		},
-	});
+  openai = createOpenAI({
+    apiKey: this.env.OPENAI_API_KEY,
+    baseURL: `https://gateway.ai.cloudflare.com/v1/tushar-personal/${this.env.CF_AI_GATEWAY_ID}/workers-ai/openai`,
+    headers: {
+      "cf-aig-authorization": `Bearer ${this.env.CF_TOKEN}`,
+    },
+  });
 
-	constructor(ctx: AgentContext, env: CloudflareBindings) {
-		super(ctx, env);
+  constructor(ctx: AgentContext, env: CloudflareBindings) {
+    super(ctx, env);
 
-		// Validate required Google credentials
-		const requiredVars = ['GOOGLE_PROJECT_ID', 'GOOGLE_PRIVATE_KEY_ID', 'GOOGLE_PRIVATE_KEY', 'GOOGLE_CLIENT_EMAIL', 'GOOGLE_CLIENT_ID'];
+    // Validate required Google credentials
+    const requiredVars = [
+      "GOOGLE_PROJECT_ID",
+      "GOOGLE_PRIVATE_KEY_ID",
+      "GOOGLE_PRIVATE_KEY",
+      "GOOGLE_CLIENT_EMAIL",
+      "GOOGLE_CLIENT_ID",
+    ];
 
-		// @ts-expect-error all good
-		const missingVars = requiredVars.filter((varName) => !this.env[varName]);
-		if (missingVars.length > 0) {
-			console.error('Missing required Google credentials:', missingVars);
-			console.error(
-				'Available env vars:',
-				Object.keys(this.env).filter((key) => key.startsWith('GOOGLE_')),
-			);
-		}
+    // @ts-expect-error all good
+    const missingVars = requiredVars.filter((varName) => !this.env[varName]);
+    if (missingVars.length > 0) {
+      console.error("Missing required Google credentials:", missingVars);
+      console.error(
+        "Available env vars:",
+        Object.keys(this.env).filter((key) => key.startsWith("GOOGLE_")),
+      );
+    }
 
-		// Log credential status for debugging
-		console.log('Google Auth Debug:', {
-			hasProjectId: !!this.env.GOOGLE_PROJECT_ID,
-			hasPrivateKeyId: !!this.env.GOOGLE_PRIVATE_KEY_ID,
-			hasPrivateKey: !!this.env.GOOGLE_PRIVATE_KEY,
-			hasClientEmail: !!this.env.GOOGLE_CLIENT_EMAIL,
-			hasClientId: !!this.env.GOOGLE_CLIENT_ID,
-			clientEmailValue: this.env.GOOGLE_CLIENT_EMAIL ? `${this.env.GOOGLE_CLIENT_EMAIL.substring(0, 5)}...` : 'undefined',
-		});
-	}
+    // Log credential status for debugging
+    console.log("Google Auth Debug:", {
+      hasProjectId: !!this.env.GOOGLE_PROJECT_ID,
+      hasPrivateKeyId: !!this.env.GOOGLE_PRIVATE_KEY_ID,
+      hasPrivateKey: !!this.env.GOOGLE_PRIVATE_KEY,
+      hasClientEmail: !!this.env.GOOGLE_CLIENT_EMAIL,
+      hasClientId: !!this.env.GOOGLE_CLIENT_ID,
+      clientEmailValue: this.env.GOOGLE_CLIENT_EMAIL
+        ? `${this.env.GOOGLE_CLIENT_EMAIL.substring(0, 5)}...`
+        : "undefined",
+    });
+  }
 
-	auth = new google.auth.GoogleAuth({
-		credentials: {
-			type: 'service_account',
-			project_id: this.env.GOOGLE_PROJECT_ID,
-			private_key_id: this.env.GOOGLE_PRIVATE_KEY_ID,
-			private_key: this.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-			client_email: this.env.GOOGLE_CLIENT_EMAIL,
-			client_id: this.env.GOOGLE_CLIENT_ID,
-		},
-		scopes: ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'],
-	});
-	sheets = google.sheets({ version: 'v4', auth: this.auth });
-	drive = google.drive({ version: 'v3', auth: this.auth });
-	async processSheetRequest({ text }: { text: string }) {
-		console.log('Processing sheet request with text:', text);
+  auth = new google.auth.GoogleAuth({
+    credentials: {
+      type: "service_account",
+      project_id: this.env.GOOGLE_PROJECT_ID,
+      private_key_id: this.env.GOOGLE_PRIVATE_KEY_ID,
+      private_key: this.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+      client_email: this.env.GOOGLE_CLIENT_EMAIL,
+      client_id: this.env.GOOGLE_CLIENT_ID,
+    },
+    scopes: [
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive",
+    ],
+  });
+  sheets = google.sheets({ version: "v4", auth: this.auth });
+  drive = google.drive({ version: "v3", auth: this.auth });
+  async processSheetRequest({ text }: { text: string }) {
+    console.log("Processing sheet request with text:", text);
 
-		// Check if authentication is properly configured
-		if (!this.env.GOOGLE_CLIENT_EMAIL) {
-			throw new Error('Google authentication not properly configured: GOOGLE_CLIENT_EMAIL is missing');
-		}
+    // Check if authentication is properly configured
+    if (!this.env.GOOGLE_CLIENT_EMAIL) {
+      throw new Error(
+        "Google authentication not properly configured: GOOGLE_CLIENT_EMAIL is missing",
+      );
+    }
 
-		// Validate that all required credentials are present
-		const credentials = {
-			type: 'service_account',
-			project_id: this.env.GOOGLE_PROJECT_ID,
-			private_key_id: this.env.GOOGLE_PRIVATE_KEY_ID,
-			private_key: this.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-			client_email: this.env.GOOGLE_CLIENT_EMAIL,
-			client_id: this.env.GOOGLE_CLIENT_ID,
-		};
+    // Validate that all required credentials are present
+    const credentials = {
+      type: "service_account",
+      project_id: this.env.GOOGLE_PROJECT_ID,
+      private_key_id: this.env.GOOGLE_PRIVATE_KEY_ID,
+      private_key: this.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+      client_email: this.env.GOOGLE_CLIENT_EMAIL,
+      client_id: this.env.GOOGLE_CLIENT_ID,
+    };
 
-		// Check for any missing required fields
-		const missingFields = Object.entries(credentials)
-			.filter(([key, value]) => key !== 'type' && !value)
-			.map(([key]) => key);
+    // Check for any missing required fields
+    const missingFields = Object.entries(credentials)
+      .filter(([key, value]) => key !== "type" && !value)
+      .map(([key]) => key);
 
-		if (missingFields.length > 0) {
-			throw new Error(`Google authentication missing required fields: ${missingFields.join(', ')}`);
-		}
-		const respText = await generateText({
-			model: openai.chat('gpt-4.1'),
-			messages: [
-				{
-					role: 'system',
-					content: `You are a Google Sheets assistant that helps users manage their spreadsheets.
+    if (missingFields.length > 0) {
+      throw new Error(
+        `Google authentication missing required fields: ${missingFields.join(", ")}`,
+      );
+    }
+    const respText = await generateText({
+      model: openai.chat("gpt-4.1"),
+      messages: [
+        {
+          role: "system",
+          content: `You are a Google Sheets assistant that helps users manage their spreadsheets.
 
 IMPORTANT: Carefully analyze the user's request to determine the correct action:
 
@@ -157,24 +182,77 @@ Examples:
 - "Delete chart with ID 123" → deleteChart
 - "Move the chart to cell D5" → moveChart
 - "Show me all charts in the spreadsheet" → getCharts
+- "Can you add a data to this cell?" → first list spreadsheets, if available find the spreadsheet ID using the metadata such as spreadsheet name, then addSheet
 
-Always choose the most appropriate tool based on the user's intent.`,
-				},
-				{
-					role: 'user',
-					content: text,
-				},
-			],
-			tools: sheetsTools(this.sheets, this.drive),
-			maxSteps: 5,
-		});
-		console.log('Sheet request processed successfully.', respText);
+Always choose the most appropriate tool based on the user's intent. If user asks to add values out of data range please do.`,
+        },
+        {
+          role: "user",
+          content: text,
+        },
+      ],
+      tools: sheetsTools(this.sheets, this.drive),
+      maxSteps: 5,
+    });
+    console.log("Sheet request processed successfully.", respText);
 
-		return respText.text;
-	}
+    return respText.text;
+  }
 
-	// Keep the old method for backward compatibility but redirect to the new one
-	async updateSheet({ text }: { text: string }) {
-		return this.processSheetRequest({ text });
-	}
+  // Keep the old method for backward compatibility but redirect to the new one
+  async updateSheet({ text }: { text: string }) {
+    return this.processSheetRequest({ text });
+  }
+}
+
+export class ScreenshotAnalysisAgent extends Agent<CloudflareBindings> {
+  openai = createOpenAI({
+    apiKey: this.env.OPENAI_API_KEY,
+    baseURL: `https://gateway.ai.cloudflare.com/v1/tushar-personal/${this.env.CF_AI_GATEWAY_ID}/workers-ai/openai`,
+    headers: {
+      "cf-aig-authorization": `Bearer ${this.env.CF_TOKEN}`,
+    },
+  });
+
+  async analyzeScreenshot(imageData: ArrayBuffer): Promise<string> {
+    // Convert to base64
+    const base64 = Buffer.from(imageData).toString("base64");
+    const dataUrl = `data:image/png;base64,${base64}`;
+
+    const analysis = await generateText({
+      model: openai.chat("gpt-4.1-mini"),
+      messages: [
+        {
+          role: "system",
+          content: `You are an expert at analyzing screenshots of Google Sheets. Extract the following metadata from the screenshot:
+1. Spreadsheet title/name
+2. Sheet/tab names visible
+3. Column headers if visible
+4. Data range (e.g., A1:F20)
+5. Any charts or graphs visible
+6. Cell formatting patterns
+7. Any formulas visible in the formula bar
+8. Overall data structure and organization
+9. Selected cells or ranges
+
+Return the analysis in a structured JSON format. If you don't see a sheet, return an empty JSON object.`,
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Please analyze this Google Sheets screenshot and extract all relevant metadata.",
+            },
+            {
+              type: "image",
+              image: dataUrl,
+            },
+          ],
+        },
+      ],
+    });
+
+    return analysis.text;
+  }
 }

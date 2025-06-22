@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { agentsMiddleware } from 'hono-agents';
-import { AudioTranscriptionAgent, GoogleSheetsAgent } from './agents/agents';
+import { AudioTranscriptionAgent, GoogleSheetsAgent, ScreenshotAnalysisAgent } from './agents/agents';
 
-export { AudioTranscriptionAgent, GoogleSheetsAgent };
+export { AudioTranscriptionAgent, GoogleSheetsAgent, ScreenshotAnalysisAgent };
 
 // Basic setup
 const app = new Hono();

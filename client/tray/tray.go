@@ -10,6 +10,7 @@ import (
 
 	"github.com/chtushar/swear-by-sheets/client/api"
 	"github.com/chtushar/swear-by-sheets/client/audio"
+	"github.com/chtushar/swear-by-sheets/client/screen"
 	"github.com/getlantern/systray"
 	"github.com/getlantern/systray/example/icon"
 )
@@ -21,6 +22,7 @@ type Tray struct {
 	toggleMenuItem *systray.MenuItem
 	quitMenuItem   *systray.MenuItem
 	audioRecorder  *audio.Recorder
+	screenRecorder *screen.Recorder
 	apiClient      *api.Client
 	recordingsDir  string
 }
@@ -37,6 +39,8 @@ func (t *Tray) Startup(ctx context.Context) error {
 
 	// Initialize audio recorder
 	t.audioRecorder = audio.NewRecorder()
+	// Initialize screen recorder
+	t.screenRecorder = screen.NewRecorder()
 	apiURL := "http://localhost:8787"
 	if envURL := os.Getenv("SWEAR_BY_SHEETS_API_URL"); envURL != "" {
 		apiURL = envURL
@@ -54,7 +58,6 @@ func (t *Tray) Startup(ctx context.Context) error {
 	}
 
 	// TODO: Initialize other dependencies
-	// - Screen capture
 	// - HTTP client
 
 	systray.Run(t.onReady, t.onExit)
@@ -114,11 +117,15 @@ func (t *Tray) startRecording() {
 		return
 	}
 
+	// Start screen recording
+	if err := t.screenRecorder.StartRecording(); err != nil {
+		log.Printf("Failed to start screen recording: %v", err)
+		// Continue with audio only if screen fails
+	}
+
 	t.isRecording = true
 	t.toggleMenuItem.SetTitle("Stop Recording")
 	systray.SetTooltip("Recording in progress...")
-
-	// TODO: Start screen capture
 
 	log.Println("Recording started")
 }
@@ -129,6 +136,11 @@ func (t *Tray) stopRecording() {
 		log.Printf("Failed to stop audio recording: %v", err)
 	}
 
+	// Stop screen recording
+	if err := t.screenRecorder.StopRecording(); err != nil {
+		log.Printf("Failed to stop screen recording: %v", err)
+	}
+
 	// Save audio file
 	timestamp := time.Now().Format("2006-01-02_15-04-05")
 	audioFile := filepath.Join(t.recordingsDir, fmt.Sprintf("audio_%s.wav", timestamp))
@@ -137,16 +149,25 @@ func (t *Tray) stopRecording() {
 		systray.SetTooltip(fmt.Sprintf("Failed to save recording: %v", err))
 	} else {
 		log.Printf("Audio saved to: %s", audioFile)
-		systray.SetTooltip(fmt.Sprintf("Recording saved to %s", audioFile))
 	}
 
-	log.Printf("Audio saved to: %s", audioFile)
-	systray.SetTooltip("Processing audio...")
+	// Save screenshot file
+	var screenshotFile string
+	if t.screenRecorder.HasScreenshot() {
+		screenshotFile = filepath.Join(t.recordingsDir, fmt.Sprintf("screenshot_%s.png", timestamp))
+		if err := t.screenRecorder.SaveToFile(screenshotFile); err != nil {
+			log.Printf("Failed to save screenshot: %v", err)
+		} else {
+			log.Printf("Screenshot saved to: %s", screenshotFile)
+		}
+	}
 
-	// Send audio to backend for processing
+	systray.SetTooltip("Processing audio and screenshot...")
+
+	// Send audio and screenshot to backend for processing
 	go func() {
-		log.Println("Sending audio to backend...")
-		resp, err := t.apiClient.ProcessAudioFile(audioFile, "")
+		log.Println("Sending audio and screenshot to backend...")
+		resp, err := t.apiClient.ProcessAudioFile(audioFile, screenshotFile)
 		if err != nil {
 			log.Printf("Failed to process audio: %v", err)
 			systray.SetTooltip(fmt.Sprintf("Failed to process: %v", err))
@@ -175,8 +196,6 @@ func (t *Tray) stopRecording() {
 
 	t.isRecording = false
 	t.toggleMenuItem.SetTitle("Start Recording")
-
-	// TODO: Stop screen capture and send to API
 
 	log.Println("Recording stopped")
 }
