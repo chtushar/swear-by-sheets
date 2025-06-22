@@ -135,6 +135,14 @@ IMPORTANT: Carefully analyze the user's request to determine the correct action:
 - If they want to DELETE a sheet/tab, use deleteSheet
 - If they want to GET INFO about a spreadsheet, use getSpreadsheet
 
+Chart Operations:
+- If they want to CREATE a COLUMN/BAR CHART, use createColumnChart
+- If they want to CREATE a PIE CHART, use createPieChart
+- If they want to CREATE a LINE CHART, use createLineChart
+- If they want to DELETE/REMOVE a chart, use deleteChart
+- If they want to MOVE/RESIZE a chart, use moveChart
+- If they want to LIST/VIEW existing charts, use getCharts
+
 Examples:
 - "Create a new budget spreadsheet" → createSpreadsheet
 - "Show me the data in A1 to B5" → getValues
@@ -143,6 +151,12 @@ Examples:
 - "Highlight row 1 in yellow" → formatCells
 - "List all my spreadsheets" → listSpreadsheets
 - "Add a new sheet called B to the spreadsheet A" → first list spreadsheets, find the spreadsheet ID, then addSheet
+- "Create a column chart of sales data" → createColumnChart
+- "Make a pie chart showing expenses" → createPieChart
+- "Create a line chart of monthly trends" → createLineChart
+- "Delete chart with ID 123" → deleteChart
+- "Move the chart to cell D5" → moveChart
+- "Show me all charts in the spreadsheet" → getCharts
 
 Always choose the most appropriate tool based on the user's intent.`,
 				},

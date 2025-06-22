@@ -609,6 +609,549 @@ export const sheetsTools = (sheets: sheets_v4.Sheets, drive: drive_v3.Drive) => 
 
 		return { ...(namedColors[color.toLowerCase()] || namedColors.black), alpha: 1 };
 	}
+
+	const createColumnChart = tool({
+		description: 'Create a column chart in a Google spreadsheet - use this when the user wants to create a column/bar chart',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			title: z.string().describe('Title of the chart'),
+			sheetId: z.number().int().optional().describe('Sheet ID where chart will be placed (optional for new sheet)'),
+			dataRange: z
+				.object({
+					sheetId: z.number().int().describe('Sheet ID containing the data'),
+					startRow: z.number().int().min(0).describe('Start row index (0-based)'),
+					endRow: z.number().int().describe('End row index (exclusive)'),
+					startColumn: z.number().int().min(0).describe('Start column index (0-based)'),
+					endColumn: z.number().int().describe('End column index (exclusive)'),
+				})
+				.describe('Range of data to chart'),
+			legendPosition: z
+				.enum(['BOTTOM_LEGEND', 'LEFT_LEGEND', 'RIGHT_LEGEND', 'TOP_LEGEND', 'NO_LEGEND'])
+				.optional()
+				.default('BOTTOM_LEGEND')
+				.describe('Position of the legend'),
+			xAxisTitle: z.string().optional().describe('Title for the X axis'),
+			yAxisTitle: z.string().optional().describe('Title for the Y axis'),
+			position: z
+				.object({
+					newSheet: z.boolean().optional().describe('Create chart in a new sheet'),
+					anchorCell: z
+						.object({
+							rowIndex: z.number().int().min(0).describe('Row index of anchor cell (0-based)'),
+							columnIndex: z.number().int().min(0).describe('Column index of anchor cell (0-based)'),
+						})
+						.optional()
+						.describe('Cell to anchor the chart (if not using new sheet)'),
+				})
+				.describe('Position of the chart'),
+		}),
+		execute: async (params) => {
+			console.log('TOOL CALLED: createColumnChart');
+			console.log('Creating column chart:', params);
+
+			try {
+				const requests: any[] = [
+					{
+						addChart: {
+							chart: {
+								spec: {
+									title: params.title,
+									basicChart: {
+										chartType: 'COLUMN',
+										legendPosition: params.legendPosition,
+										axis: [
+											...(params.xAxisTitle
+												? [
+														{
+															position: 'BOTTOM_AXIS',
+															title: params.xAxisTitle,
+														},
+													]
+												: []),
+											...(params.yAxisTitle
+												? [
+														{
+															position: 'LEFT_AXIS',
+															title: params.yAxisTitle,
+														},
+													]
+												: []),
+										],
+										domains: [
+											{
+												domain: {
+													sourceRange: {
+														sources: [
+															{
+																sheetId: params.dataRange.sheetId,
+																startRowIndex: params.dataRange.startRow,
+																endRowIndex: params.dataRange.endRow,
+																startColumnIndex: params.dataRange.startColumn,
+																endColumnIndex: params.dataRange.startColumn + 1,
+															},
+														],
+													},
+												},
+											},
+										],
+										series: Array.from({ length: params.dataRange.endColumn - params.dataRange.startColumn - 1 }, (_, i) => ({
+											series: {
+												sourceRange: {
+													sources: [
+														{
+															sheetId: params.dataRange.sheetId,
+															startRowIndex: params.dataRange.startRow,
+															endRowIndex: params.dataRange.endRow,
+															startColumnIndex: params.dataRange.startColumn + i + 1,
+															endColumnIndex: params.dataRange.startColumn + i + 2,
+														},
+													],
+												},
+											},
+											targetAxis: 'LEFT_AXIS',
+										})),
+										headerCount: 1,
+									},
+								},
+								position: params.position.newSheet
+									? { newSheet: true }
+									: {
+											overlayPosition: {
+												anchorCell: {
+													sheetId: params.sheetId!,
+													rowIndex: params.position.anchorCell!.rowIndex,
+													columnIndex: params.position.anchorCell!.columnIndex,
+												},
+											},
+										},
+							},
+						},
+					},
+				];
+
+				const response = await sheets.spreadsheets.batchUpdate({
+					spreadsheetId: params.spreadsheetId,
+					requestBody: { requests },
+				});
+
+				const chartId = response.data.replies?.[0]?.addChart?.chart?.chartId;
+				return {
+					success: true,
+					chartId,
+					spreadsheetId: params.spreadsheetId,
+				};
+			} catch (error) {
+				console.error('Error creating column chart:', error);
+				throw new Error(`Failed to create column chart: ${error}`);
+			}
+		},
+	});
+
+	const createPieChart = tool({
+		description: 'Create a pie chart in a Google spreadsheet - use this when the user wants to create a pie chart',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			title: z.string().describe('Title of the chart'),
+			sheetId: z.number().int().optional().describe('Sheet ID where chart will be placed'),
+			dataRange: z
+				.object({
+					sheetId: z.number().int().describe('Sheet ID containing the data'),
+					labelsStartRow: z.number().int().min(0).describe('Start row for labels (0-based)'),
+					labelsEndRow: z.number().int().describe('End row for labels (exclusive)'),
+					labelsColumn: z.number().int().min(0).describe('Column index for labels (0-based)'),
+					valuesStartRow: z.number().int().min(0).describe('Start row for values (0-based)'),
+					valuesEndRow: z.number().int().describe('End row for values (exclusive)'),
+					valuesColumn: z.number().int().min(0).describe('Column index for values (0-based)'),
+				})
+				.describe('Range of data to chart'),
+			legendPosition: z
+				.enum(['BOTTOM_LEGEND', 'LEFT_LEGEND', 'RIGHT_LEGEND', 'TOP_LEGEND', 'LABELED_LEGEND', 'NO_LEGEND'])
+				.optional()
+				.default('RIGHT_LEGEND')
+				.describe('Position of the legend'),
+			threeDimensional: z.boolean().optional().default(false).describe('Make it a 3D pie chart'),
+			position: z
+				.object({
+					anchorCell: z
+						.object({
+							rowIndex: z.number().int().min(0).describe('Row index of anchor cell (0-based)'),
+							columnIndex: z.number().int().min(0).describe('Column index of anchor cell (0-based)'),
+						})
+						.describe('Cell to anchor the chart'),
+					offsetX: z.number().int().optional().default(0).describe('X offset in pixels'),
+					offsetY: z.number().int().optional().default(0).describe('Y offset in pixels'),
+				})
+				.describe('Position of the chart'),
+		}),
+		execute: async (params) => {
+			console.log('TOOL CALLED: createPieChart');
+			console.log('Creating pie chart:', params);
+
+			try {
+				const requests: any[] = [
+					{
+						addChart: {
+							chart: {
+								spec: {
+									title: params.title,
+									pieChart: {
+										legendPosition: params.legendPosition,
+										threeDimensional: params.threeDimensional,
+										domain: {
+											sourceRange: {
+												sources: [
+													{
+														sheetId: params.dataRange.sheetId,
+														startRowIndex: params.dataRange.labelsStartRow,
+														endRowIndex: params.dataRange.labelsEndRow,
+														startColumnIndex: params.dataRange.labelsColumn,
+														endColumnIndex: params.dataRange.labelsColumn + 1,
+													},
+												],
+											},
+										},
+										series: {
+											sourceRange: {
+												sources: [
+													{
+														sheetId: params.dataRange.sheetId,
+														startRowIndex: params.dataRange.valuesStartRow,
+														endRowIndex: params.dataRange.valuesEndRow,
+														startColumnIndex: params.dataRange.valuesColumn,
+														endColumnIndex: params.dataRange.valuesColumn + 1,
+													},
+												],
+											},
+										},
+									},
+								},
+								position: {
+									overlayPosition: {
+										anchorCell: {
+											sheetId: params.sheetId || params.dataRange.sheetId,
+											rowIndex: params.position.anchorCell.rowIndex,
+											columnIndex: params.position.anchorCell.columnIndex,
+										},
+										offsetXPixels: params.position.offsetX,
+										offsetYPixels: params.position.offsetY,
+									},
+								},
+							},
+						},
+					},
+				];
+
+				const response = await sheets.spreadsheets.batchUpdate({
+					spreadsheetId: params.spreadsheetId,
+					requestBody: { requests },
+				});
+
+				const chartId = response.data.replies?.[0]?.addChart?.chart?.chartId;
+				return {
+					success: true,
+					chartId,
+					spreadsheetId: params.spreadsheetId,
+				};
+			} catch (error) {
+				console.error('Error creating pie chart:', error);
+				throw new Error(`Failed to create pie chart: ${error}`);
+			}
+		},
+	});
+
+	const createLineChart = tool({
+		description: 'Create a line chart in a Google spreadsheet - use this when the user wants to create a line chart',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			title: z.string().optional().describe('Title of the chart'),
+			sheetId: z.number().int().describe('Sheet ID where chart will be placed'),
+			dataRanges: z
+				.array(
+					z.object({
+						sheetId: z.number().int().describe('Sheet ID containing the data'),
+						startRow: z.number().int().min(0).describe('Start row index (0-based)'),
+						endRow: z.number().int().describe('End row index (exclusive)'),
+						startColumn: z.number().int().min(0).describe('Start column index (0-based)'),
+						endColumn: z.number().int().describe('End column index (exclusive)'),
+					}),
+				)
+				.describe('Multiple ranges of data to chart (for non-adjacent ranges)'),
+			legendPosition: z
+				.enum(['BOTTOM_LEGEND', 'LEFT_LEGEND', 'RIGHT_LEGEND', 'TOP_LEGEND', 'NO_LEGEND'])
+				.optional()
+				.describe('Position of the legend'),
+			xAxisTitle: z.string().optional().describe('Title for the X axis'),
+			position: z
+				.object({
+					anchorCell: z
+						.object({
+							rowIndex: z.number().int().min(0).describe('Row index of anchor cell (0-based)'),
+							columnIndex: z.number().int().min(0).describe('Column index of anchor cell (0-based)'),
+						})
+						.describe('Cell to anchor the chart'),
+				})
+				.describe('Position of the chart'),
+		}),
+		execute: async (params) => {
+			console.log('TOOL CALLED: createLineChart');
+			console.log('Creating line chart:', params);
+
+			try {
+				// Build domain sources from all ranges (first column)
+				const domainSources = params.dataRanges.map((range) => ({
+					startRowIndex: range.startRow,
+					endRowIndex: range.endRow,
+					startColumnIndex: range.startColumn,
+					endColumnIndex: range.startColumn + 1,
+					sheetId: range.sheetId,
+				}));
+
+				// Build series sources from all ranges (second column)
+				const seriesSources = params.dataRanges.map((range) => ({
+					startRowIndex: range.startRow,
+					endRowIndex: range.endRow,
+					startColumnIndex: range.startColumn + 1,
+					endColumnIndex: range.startColumn + 2,
+					sheetId: range.sheetId,
+				}));
+
+				const requests: any[] = [
+					{
+						addChart: {
+							chart: {
+								spec: {
+									...(params.title ? { title: params.title } : {}),
+									basicChart: {
+										chartType: 'LINE',
+										...(params.legendPosition ? { legendPosition: params.legendPosition } : {}),
+										...(params.xAxisTitle
+											? {
+													axis: [
+														{
+															position: 'BOTTOM_AXIS',
+															title: params.xAxisTitle,
+														},
+													],
+												}
+											: {}),
+										domains: [
+											{
+												domain: {
+													sourceRange: {
+														sources: domainSources,
+													},
+												},
+											},
+										],
+										series: [
+											{
+												series: {
+													sourceRange: {
+														sources: seriesSources,
+													},
+												},
+											},
+										],
+									},
+								},
+								position: {
+									overlayPosition: {
+										anchorCell: {
+											sheetId: params.sheetId,
+											rowIndex: params.position.anchorCell.rowIndex,
+											columnIndex: params.position.anchorCell.columnIndex,
+										},
+									},
+								},
+							},
+						},
+					},
+				];
+
+				const response = await sheets.spreadsheets.batchUpdate({
+					spreadsheetId: params.spreadsheetId,
+					requestBody: { requests },
+				});
+
+				const chartId = response.data.replies?.[0]?.addChart?.chart?.chartId;
+				return {
+					success: true,
+					chartId,
+					spreadsheetId: params.spreadsheetId,
+				};
+			} catch (error) {
+				console.error('Error creating line chart:', error);
+				throw new Error(`Failed to create line chart: ${error}`);
+			}
+		},
+	});
+
+	const deleteChart = tool({
+		description: 'Delete a chart from a Google spreadsheet - use this when the user wants to remove a chart',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			chartId: z.number().int().describe('ID of the chart to delete'),
+		}),
+		execute: async ({ spreadsheetId, chartId }) => {
+			console.log('TOOL CALLED: deleteChart');
+			console.log('Deleting chart:', { spreadsheetId, chartId });
+
+			try {
+				await sheets.spreadsheets.batchUpdate({
+					spreadsheetId,
+					requestBody: {
+						requests: [
+							{
+								deleteEmbeddedObject: {
+									objectId: chartId,
+								},
+							},
+						],
+					},
+				});
+
+				return {
+					success: true,
+					spreadsheetId,
+					deletedChartId: chartId,
+				};
+			} catch (error) {
+				console.error('Error deleting chart:', error);
+				throw new Error(`Failed to delete chart: ${error}`);
+			}
+		},
+	});
+
+	const moveChart = tool({
+		description: 'Move or resize a chart in a Google spreadsheet - use this when the user wants to reposition or resize a chart',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			chartId: z.number().int().describe('ID of the chart to move/resize'),
+			sheetId: z.number().int().describe('Sheet ID where the chart is located'),
+			anchorCell: z
+				.object({
+					rowIndex: z.number().int().min(0).describe('Row index of new anchor cell (0-based)'),
+					columnIndex: z.number().int().min(0).describe('Column index of new anchor cell (0-based)'),
+				})
+				.describe('New anchor position'),
+			offsetX: z.number().int().optional().describe('X offset in pixels from anchor cell'),
+			offsetY: z.number().int().optional().describe('Y offset in pixels from anchor cell'),
+			width: z.number().int().positive().optional().describe('New width in pixels'),
+			height: z.number().int().positive().optional().describe('New height in pixels'),
+		}),
+		execute: async (params) => {
+			console.log('TOOL CALLED: moveChart');
+			console.log('Moving/resizing chart:', params);
+
+			try {
+				const newPosition: any = {
+					overlayPosition: {
+						anchorCell: {
+							sheetId: params.sheetId,
+							rowIndex: params.anchorCell.rowIndex,
+							columnIndex: params.anchorCell.columnIndex,
+						},
+					},
+				};
+
+				let fields = 'anchorCell(rowIndex,columnIndex)';
+
+				if (params.offsetX !== undefined) {
+					newPosition.overlayPosition.offsetXPixels = params.offsetX;
+					fields += ',offsetXPixels';
+				}
+				if (params.offsetY !== undefined) {
+					newPosition.overlayPosition.offsetYPixels = params.offsetY;
+					fields += ',offsetYPixels';
+				}
+				if (params.width !== undefined) {
+					newPosition.overlayPosition.widthPixels = params.width;
+					fields += ',widthPixels';
+				}
+				if (params.height !== undefined) {
+					newPosition.overlayPosition.heightPixels = params.height;
+					fields += ',heightPixels';
+				}
+
+				await sheets.spreadsheets.batchUpdate({
+					spreadsheetId: params.spreadsheetId,
+					requestBody: {
+						requests: [
+							{
+								updateEmbeddedObjectPosition: {
+									objectId: params.chartId,
+									newPosition,
+									fields,
+								},
+							},
+						],
+					},
+				});
+
+				return {
+					success: true,
+					spreadsheetId: params.spreadsheetId,
+					chartId: params.chartId,
+					newPosition: params.anchorCell,
+					dimensions: {
+						width: params.width,
+						height: params.height,
+					},
+				};
+			} catch (error) {
+				console.error('Error moving/resizing chart:', error);
+				throw new Error(`Failed to move/resize chart: ${error}`);
+			}
+		},
+	});
+
+	const getCharts = tool({
+		description: 'Get all charts from a Google spreadsheet - use this when the user wants to see what charts exist',
+		parameters: z.object({
+			spreadsheetId: z.string().describe('ID of the spreadsheet'),
+			sheetId: z.number().int().optional().describe('Optional: Get charts from a specific sheet only'),
+		}),
+		execute: async ({ spreadsheetId, sheetId }) => {
+			console.log('TOOL CALLED: getCharts');
+			console.log('Getting charts:', { spreadsheetId, sheetId });
+
+			try {
+				const response = await sheets.spreadsheets.get({
+					spreadsheetId,
+					fields: 'sheets(properties,charts)',
+				});
+
+				const allCharts: any[] = [];
+
+				response.data.sheets?.forEach((sheet) => {
+					if (sheetId !== undefined && sheet.properties?.sheetId !== sheetId) {
+						return;
+					}
+
+					sheet.charts?.forEach((chart) => {
+						allCharts.push({
+							chartId: chart.chartId,
+							sheetId: sheet.properties?.sheetId,
+							sheetName: sheet.properties?.title,
+							title: chart.spec?.title,
+							chartType: chart.spec?.basicChart?.chartType || chart.spec?.pieChart ? 'PIE' : 'UNKNOWN',
+							position: chart.position,
+						});
+					});
+				});
+
+				return {
+					spreadsheetId,
+					charts: allCharts,
+					totalCharts: allCharts.length,
+				};
+			} catch (error) {
+				console.error('Error getting charts:', error);
+				throw new Error(`Failed to get charts: ${error}`);
+			}
+		},
+	});
+
 	return {
 		createSpreadsheet,
 		getValues,
@@ -620,5 +1163,11 @@ export const sheetsTools = (sheets: sheets_v4.Sheets, drive: drive_v3.Drive) => 
 		deleteSheet,
 		shareSpreadsheet,
 		formatCells,
+		createColumnChart,
+		createPieChart,
+		createLineChart,
+		deleteChart,
+		moveChart,
+		getCharts,
 	};
 };
